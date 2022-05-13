@@ -1,0 +1,4 @@
+hosts:
+  - host: HOST
+    username: USR
+    password: PWD
