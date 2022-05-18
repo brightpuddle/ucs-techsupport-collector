@@ -155,8 +155,8 @@ class UCSM:
 
 async def handle_host(host: str, usr: str, pwd: str) -> Result[None, str]:
     connector = aiohttp.TCPConnector(ssl=False, limit_per_host=1)
-    # 20 minute timeout to give download time to complete
-    timeout = aiohttp.ClientTimeout(total=1200)
+    # hour long timeout to give download time to complete
+    timeout = aiohttp.ClientTimeout(total=3600)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         ucsm = UCSM(host, session)
         log.info(f"logging in to {ucsm.host}")
