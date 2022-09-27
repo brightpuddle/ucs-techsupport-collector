@@ -131,7 +131,7 @@ class UCSM:
                     bytes_written += 8192
                     f.write(chunk)
                     progress = round(bytes_written / file_size * 100)
-                    log.debug(f"download progress: {progress}%")
+                    log.debug(f"download progress for {self.host}: {progress}%")
 
     async def login(self, usr: str, pwd: str) -> Result[None, str]:
         xml = f'<aaaLogin inName="{usr}" inPassword="{pwd}" />'
