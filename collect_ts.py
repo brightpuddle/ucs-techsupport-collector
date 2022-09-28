@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import logging.handlers
 import traceback
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 
+import aiofiles
 import yaml
 from aiohttp.client_exceptions import ServerDisconnectedError
+from rich.console import Console
+from rich.progress import Progress
 
 try:
     from yaml import CLoader as Loader
@@ -24,37 +25,25 @@ LOGGER_NAME = "ucsm_techsupport"
 
 @dataclass
 class Logger:
-    def __init__(self):
-        self.log = logging.getLogger(LOGGER_NAME)
-        self.log.setLevel(logging.DEBUG)
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s %(message)s"
-        )
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
-        ch.setFormatter(logging.Formatter("%(message)s"))
-        fh = logging.handlers.RotatingFileHandler(
-            LOGGER_NAME + ".log", maxBytes=1024 * 1024, backupCount=10
-        )
-        fh.setFormatter(formatter)
-        fh.setLevel(logging.DEBUG)
-        self.log.addHandler(ch)
-        self.log.addHandler(fh)
+    def __init__(self, console: Console):
+        self.ch = console
+        f = open(f"{LOGGER_NAME}.log", "w+")
+        self.fh = Console(stderr=True, file=f)
 
     def debug(self, msg: str):
-        self.log.debug(msg)
+        self.fh.log(f"DEBUG: {msg}")
 
     def info(self, msg: str):
-        self.log.info(msg)
+        self.fh.log(f"INFO: {msg}")
+        self.ch.log(f"[green]INFO:[/] {msg}")
 
     def warning(self, msg: str):
-        self.log.warning(msg)
+        self.fh.log(f"WARNING: {msg}")
+        self.ch.log(f"[yellow]WARNING:[/] {msg}")
 
     def error(self, msg: str):
-        self.log.error(msg)
-
-
-log = Logger()
+        self.fh.log(f"ERROR: {msg}")
+        self.ch.log(f"[red]ERROR:[/] {msg}")
 
 
 class QueryResult:
@@ -71,16 +60,66 @@ class ServerDisconnectErr(Err):
 
 
 class UCSM:
-    def __init__(self, host: str, session: aiohttp.ClientSession):
+    def __init__(
+        self, host: str, session: aiohttp.ClientSession, p: Progress, log: Logger
+    ):
         self.ts: int | None = None
         self.cookie: str | None = None
         self.host = host
         self.url = f"https://{self.host}/nuova"
+        self.progress = p
+        self.log = log
+        self.task = p.add_task(f"Generating techsupport for {host}...", total=None)
         self.session = session
         with open("start.html") as f:
             self.start_ts_tpl = f.read()
         with open("query.html") as f:
             self.query_ts_tpl = f.read()
+
+    @classmethod
+    async def start(
+        cls, host: str, usr: str, pwd: str, p: Progress, log: Logger
+    ) -> Result[None, str]:
+        conn = aiohttp.TCPConnector(ssl=False, limit_per_host=1)
+        # hour long timeout to give download time to complete
+        timeout = aiohttp.ClientTimeout(total=3600)
+        async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
+            ucsm = cls(host, session, p, log)
+            log.info(f"logging in to {ucsm.host}")
+            try:
+                res = await ucsm.login(usr, pwd)
+                if isinstance(res, Err):
+                    return Err(f"error logging into {ucsm.host}: {res.value}")
+                log.info(f"starting techsupport for {ucsm.host}")
+                res = await ucsm.start_techsupport()
+                if isinstance(res, Err):
+                    return Err(f"error logging into {ucsm.host}: {res.value}")
+                while True:
+                    res = await ucsm.query_techsupport()
+                    if isinstance(res, ServerDisconnectErr):
+                        await asyncio.sleep(10)
+                        continue
+                    if isinstance(res, Err):
+                        log.error(f"host: {ucsm.host} err: {res.value}")
+                        return res
+                    res = res.unwrap()
+                    if res.is_complete():
+                        break
+                    await asyncio.sleep(5)
+                log.info(f"downloading techsupport for {ucsm.host}")
+                await ucsm.download_techsupport(res.uri)
+            except Exception as e:
+                raise e
+            finally:
+                if ucsm.cookie:
+                    try:
+                        res = await ucsm.logout()
+                        if isinstance(res, Err):
+                            return res
+                    except Exception as e:
+                        traceback.print_exc()
+                        return Err(str(e))
+        return Ok()
 
     def get_ts(self) -> int:
         if self.ts is None:
@@ -126,12 +165,22 @@ class UCSM:
         bytes_written = 0
         async with self.session.post(url, headers=headers) as res:
             file_size = int(res.headers["Content-Length"])
-            with open(name, "wb") as f:
+            file_size_mb = round(int(res.headers["Content-Length"]) / 1024 / 1024)
+            self.progress.update(
+                self.task,
+                description=f"Downloading {file_size_mb}MB for {self.host}...",
+                total=100,
+            )
+            async with aiofiles.open(name, "wb") as f:
                 async for chunk in res.content.iter_chunked(CHUNK_SIZE):
                     bytes_written += 8192
-                    f.write(chunk)
-                    progress = round(bytes_written / file_size * 100)
-                    log.debug(f"download progress for {self.host}: {progress}%")
+                    await f.write(chunk)
+                    self.progress.update(
+                        self.task, completed=round(bytes_written / file_size * 100)
+                    )
+        self.progress.update(
+            self.task, description=f"{self.host} complete.", completed=100
+        )
 
     async def login(self, usr: str, pwd: str) -> Result[None, str]:
         xml = f'<aaaLogin inName="{usr}" inPassword="{pwd}" />'
@@ -153,59 +202,18 @@ class UCSM:
         return await self.post(xml)
 
 
-async def handle_host(host: str, usr: str, pwd: str) -> Result[None, str]:
-    connector = aiohttp.TCPConnector(ssl=False, limit_per_host=1)
-    # hour long timeout to give download time to complete
-    timeout = aiohttp.ClientTimeout(total=3600)
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        ucsm = UCSM(host, session)
-        log.info(f"logging in to {ucsm.host}")
-        try:
-            res = await ucsm.login(usr, pwd)
-            if isinstance(res, Err):
-                return Err(f"error logging into {ucsm.host}: {res.value}")
-            log.info(f"starting techsupport for {ucsm.host}")
-            res = await ucsm.start_techsupport()
-            if isinstance(res, Err):
-                return Err(f"error logging into {ucsm.host}: {res.value}")
-            while True:
-                res = await ucsm.query_techsupport()
-                if isinstance(res, ServerDisconnectErr):
-                    await asyncio.sleep(10)
-                    continue
-                if isinstance(res, Err):
-                    log.error(f"host: {ucsm.host} err: {res.value}")
-                    return res
-                res = res.unwrap()
-                if res.is_complete():
-                    break
-                log.debug(f"host: {ucsm.host} status: {res.state}")
-                await asyncio.sleep(5)
-            log.info(f"downloading techsupport for {ucsm.host}")
-            await ucsm.download_techsupport(res.uri)
-        except Exception as e:
-            raise e
-        finally:
-            if ucsm.cookie:
-                try:
-                    res = await ucsm.logout()
-                    if isinstance(res, Err):
-                        return res
-                except Exception as e:
-                    traceback.print_exc()
-                    return Err(str(e))
-    return Ok()
-
-
 async def main():
     with open("config.yml") as f:
         cfg = yaml.load(f, Loader=Loader)
     hosts = []
-    for h in cfg["hosts"]:
-        hosts.append(handle_host(h["host"], h["username"], h["password"]))
-    results = await asyncio.gather(*hosts)
-    for res in results:
-        print(res.value)
+    c = Console()
+    log = Logger(c)
+    with Progress(console=c) as p:
+        for h in cfg["hosts"]:
+            hosts.append(UCSM.start(h["host"], h["username"], h["password"], p, log))
+        results = await asyncio.gather(*hosts)
+        for res in results:
+            log.info(res.value)
 
 
 if __name__ == "__main__":
