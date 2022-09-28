@@ -202,7 +202,7 @@ class UCSM:
         return await self.post(xml)
 
 
-async def main():
+async def main() -> None:
     with open("config.yml") as f:
         cfg = yaml.load(f, Loader=Loader)
     hosts = []
@@ -213,7 +213,8 @@ async def main():
             hosts.append(UCSM.start(h["host"], h["username"], h["password"], p, log))
         results = await asyncio.gather(*hosts)
         for res in results:
-            log.info(res.value)
+            if isinstance(res, Err):
+                log.error(res.value)
 
 
 if __name__ == "__main__":
