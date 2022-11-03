@@ -1,0 +1,7 @@
+intersight:
+  api_key: <KEY>
+  secret_key_file: <FILENAME>
+targets:
+  - host: <HOST>
+    username: <USR>
+    password: <PWD>
