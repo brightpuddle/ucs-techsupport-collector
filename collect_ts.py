@@ -203,13 +203,13 @@ class UCSM:
 
 
 async def main() -> None:
-    with open("config.yml") as f:
+    with open("config.yaml") as f:
         cfg = yaml.load(f, Loader=Loader)
     hosts = []
     c = Console()
     log = Logger(c)
     with Progress(console=c) as p:
-        for h in cfg["hosts"]:
+        for h in cfg["targets"]:
             hosts.append(UCSM.start(h["host"], h["username"], h["password"], p, log))
         results = await asyncio.gather(*hosts)
         for res in results:
