@@ -215,7 +215,8 @@ class Intersight:
     async def download_techsupport(self) -> Result[None, str]:
         if self.download_url is None:
             return Err("download called with no valid link")
-        name = f"{self.name}-{self.moid}.tar"
+        ts = datetime.now().strftime("%Y%m%d%H%M%S")
+        name = f"{ts}_{self.name}.tar"
         CHUNK_SIZE = 8192
         bytes_written = 0
         if self.session is None:
