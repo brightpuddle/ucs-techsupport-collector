@@ -221,7 +221,7 @@ class Intersight:
         if self.session is None:
             return Err("no session for download")
         headers = self.get_auth_headers("GET", self.download_url, None)
-        self.log.info(f"downloading {self.download_url} for {self.name}")
+        self.log.info(f"downloading {name} for {self.name}")
         async with self.session.get(self.download_url, headers=headers) as res:
             file_size = int(res.headers["Content-Length"])
             file_size_mb = round(int(res.headers["Content-Length"]) / 1024 / 1024)
@@ -455,7 +455,7 @@ class UCSM:
         bytes_written = 0
         if self.session is None:
             return Err("no session for download")
-        self.log.info(f"downloading {self.url} for {self.name}")
+        self.log.info(f"downloading {name} for {self.name}")
         async with self.session.post(url, headers=headers) as res:
             file_size = int(res.headers["Content-Length"])
             file_size_mb = round(int(res.headers["Content-Length"]) / 1024 / 1024)
