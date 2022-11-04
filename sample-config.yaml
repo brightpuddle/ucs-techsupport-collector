@@ -1,7 +1,16 @@
-intersight:
-  api_key: <KEY>
-  secret_key_file: <FILENAME>
-targets:
-  - host: <HOST>
-    username: <USR>
-    password: <PWD>
+# Intersight credentials are only required if downloading techsupport from intersight
+# Intersight API key
+api_key: <key>
+# Intersight secret key file
+secret_key_file: <filename>
+
+hosts:
+  - source: ucsm
+    host: <host>
+    username: <usr>
+    password: <pwd>
+
+  - source: intersight
+    vip: <x.x.x.x>
+
+  # additional TS download targets...
