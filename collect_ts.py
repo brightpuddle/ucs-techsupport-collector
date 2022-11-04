@@ -157,7 +157,6 @@ class Intersight:
                 if res.is_complete():
                     break
                 await asyncio.sleep(5)
-            self.log.info(f"downloading techsupport for {self.name}")
             await self.download_techsupport()
         return Ok()
 
@@ -395,7 +394,6 @@ class UCSM:
                     if res.is_complete():
                         break
                     await asyncio.sleep(5)
-                self.log.info(f"downloading techsupport for {self.name}")
                 await self.download_techsupport(res.uri)
             except Exception as e:
                 raise e
