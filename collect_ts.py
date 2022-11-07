@@ -30,6 +30,34 @@ from result import Err, Ok, Result
 LOGGER_NAME = "ucsm_techsupport"
 INTERSIGHT_API = "https://www.intersight.com/api/v1"
 
+ucsm_start_ts_template = """
+<configConfMos cookie="{cookie}" inHierarchical="false">
+  <inConfigs>
+    <pair key="sys/tech-support-files/tech-support-{ts}">
+      <sysdebugTechSupport
+        creationTS="{ts}"
+        adminState="start"
+        status="created"
+        dn="sys/tech-support-files/tech-support-{ts}"
+      >
+        <sysdebugTechSupportCmdOpt
+          majorOptType="ucsm"
+          dn="sys/tech-support-files/tech-support-{ts}/tech-support-cmd-opt"
+        />
+      </sysdebugTechSupport>
+    </pair>
+  </inConfigs>
+</configConfMos>
+"""
+
+ucsm_query_ts_template = """
+<configResolveDns cookie="{cookie}" inHierarchical="false">
+  <inDns>
+    <dn value="sys/tech-support-files/tech-support-{ts}" />
+  </inDns>
+</configResolveDns>
+"""
+
 
 @dataclass
 class Logger:
@@ -361,10 +389,6 @@ class UCSM:
         self.url = f"https://{self.host.host}/nuova"
         msg = f"Generating techsupport for {self.name}..."
         self.task = self.progress.add_task(msg, total=None)
-        with open("start.html") as f:
-            self.start_ts_tpl = f.read()
-        with open("query.html") as f:
-            self.query_ts_tpl = f.read()
 
     async def start(self) -> Result[None, str]:
         conn = aiohttp.TCPConnector(ssl=False, limit_per_host=1)
@@ -425,11 +449,11 @@ class UCSM:
         return Ok(txt)
 
     async def start_techsupport(self) -> Result[str, str]:
-        xml = self.start_ts_tpl.format(ts=self.get_ts(), cookie=self.cookie)
+        xml = ucsm_start_ts_template.format(ts=self.get_ts(), cookie=self.cookie)
         return await self.post(xml)
 
     async def query_techsupport(self) -> Result[UCSMQueryResult, str]:
-        xml = self.query_ts_tpl.format(ts=self.get_ts(), cookie=self.cookie)
+        xml = ucsm_query_ts_template.format(ts=self.get_ts(), cookie=self.cookie)
         try:
             res = await self.post(xml)
         except ServerDisconnectedError:
