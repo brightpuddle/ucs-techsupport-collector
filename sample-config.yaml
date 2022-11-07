@@ -2,7 +2,7 @@
 # Intersight API key
 api_key: <key>
 # Intersight secret key file
-secret_key_file: <filename>
+secret_key_file: secret_key.txt
 
 hosts:
   - source: ucsm
