@@ -9,7 +9,7 @@
 # Requirements
 
 - Python 3.10 (expected to be compatible with Python 3.9, but not tested)
-- `pip install requirements.txt`
+- `pip install -r requirements.txt`
 - Network access to collection targets, e.g. UCSM hosts and/or https://intersight.com
 
 # Intersight API key generation
