@@ -4,18 +4,13 @@ import asyncio
 import json
 import traceback
 import xml.etree.ElementTree as ET
-from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime
-from email.utils import formatdate
-from urllib.parse import urlparse
+import time
 
 import aiofiles
 import yaml
 from aiohttp.client_exceptions import ServerDisconnectedError
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
 from rich.console import Console
 from rich.progress import Progress
 
@@ -28,7 +23,7 @@ import aiohttp
 from result import Err, Ok, Result
 
 LOGGER_NAME = "ucsm_techsupport"
-INTERSIGHT_API = "https://www.intersight.com/api/v1"
+INTERSIGHT_API = "https://intersight.com/api/v1"
 
 ucsm_start_ts_template = """
 <configConfMos cookie="{cookie}" inHierarchical="false">
@@ -98,9 +93,8 @@ class IntersightHost:
 
 @dataclass
 class Config:
-    api_key: str
-    secret_key_file: str
-    secret_key_file_password: str | None = None
+    client_id: str
+    client_secret: str
     hosts: list[UCSMHost | IntersightHost] = field(default_factory=list)
 
     @classmethod
@@ -142,20 +136,13 @@ class Intersight:
     sn: str | None = None
     moid: str | None = None
     status: str | None = None
+    _token: str | None = None
+    _token_refresh: int = 0
 
     def __post_init__(self):
         self.name = self.host.vip
         msg = f"Generating techsupport for {self.name}..."
         self.task = self.progress.add_task(msg, total=None)
-        pwd = None
-        if self.cfg.secret_key_file_password is not None:
-            pwd = bytes(self.cfg.secret_key_file_password, "utf-8")
-        with open(self.cfg.secret_key_file, "rb") as f:
-            self.secret_key = serialization.load_pem_private_key(
-                f.read(),
-                password=pwd,
-                backend=default_backend(),
-            )
 
     async def start(self) -> Result[None, str]:
         # conn = aiohttp.TCPConnector(ssl=True, limit_per_host=1)
@@ -171,7 +158,9 @@ class Intersight:
                 return Err(f"error fetching pid and sn on {self.name}: {res.value}")
 
             # Start techsupport
-            self.log.info(f"starting techsupport for {self.name}")
+            self.log.info(
+                f"starting Intersight techsupport for {self.name} SN: {self.sn}"
+            )
             res = await self.start_techsupport()
             if isinstance(res, Err):
                 msg = f"error starting techsupport for {self.name}: {res.value}"
@@ -187,6 +176,30 @@ class Intersight:
                 await asyncio.sleep(5)
             await self.download_techsupport()
         return Ok()
+
+    async def get_token(self) -> str:
+        if int(time.time()) - self._token_refresh > 900:
+            if self._token is not None:
+                return self._token
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://intersight.com/iam/token",
+                # auth=aiohttp.BasicAuth(self.cfg.client_id, self.cfg.client_secret),
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.cfg.client_id,
+                    "client_secret": self.cfg.client_secret,
+                },
+            ) as res:
+                if res.status != 200:
+                    raise Exception(
+                        "Failed to fetch token from the OAuth 2.0 server: %s"
+                        % res.status
+                    )
+                token_json = await res.json()
+                self._token = token_json["access_token"]
+                self._token_refresh = int(time.time())
+                return token_json["access_token"]
 
     async def get_pid_serial(self) -> Result[None, str]:
         query = f"$filter=contains(DeviceIpAddress,'{self.host.vip}')"
@@ -237,6 +250,8 @@ class Intersight:
             self.download_url = data["TechsupportDownloadUrl"]
         except Exception:
             return Err("cannot read query_techsupport response")
+        if not self.status:
+            self.status = "Unknown"
         return Ok(IntersightQueryResult(self.status, self.download_url))
 
     async def download_techsupport(self) -> Result[None, str]:
@@ -248,8 +263,8 @@ class Intersight:
         bytes_written = 0
         if self.session is None:
             return Err("no session for download")
-        headers = self.get_auth_headers("GET", self.download_url, None)
         self.log.info(f"downloading {name} for {self.name}")
+        headers = await self.get_headers()
         async with self.session.get(self.download_url, headers=headers) as res:
             file_size = int(res.headers["Content-Length"])
             file_size_mb = round(int(res.headers["Content-Length"]) / 1024 / 1024)
@@ -273,7 +288,7 @@ class Intersight:
     async def get(self, url: str) -> Result[dict, str]:
         if self.session is None:
             return Err("GET with no session")
-        headers = self.get_auth_headers("GET", url, None)
+        headers = await self.get_headers()
         async with self.session.get(url, headers=headers) as res:
             if res.status >= 300:
                 return Err(f"Status code: {res.status}")
@@ -284,85 +299,19 @@ class Intersight:
         if self.session is None:
             return Err("POST with no session")
         body = json.dumps(data)
-        headers = self.get_auth_headers("POST", url, body)
+        headers = await self.get_headers()
         async with self.session.post(url, data=body, headers=headers) as res:
             if res.status >= 300:
                 return Err(f"Status code: {res.status}")
             res_data = await res.json()
             return Ok(res_data)
 
-    def get_auth_headers(self, method, url, body) -> dict[str, str]:
-        date = formatdate(timeval=None, localtime=False, usegmt=True)
-        # date = "Tue, 07 Aug 2018 04:03:47 GMT"
-
-        digest = self.get_sha256_digest(body)
-
-        parsed_url = urlparse(url)
-        path = parsed_url.path or "/"
-
-        if parsed_url.query:
-            path += "?" + parsed_url.query
-
-        signing_headers = {
-            "Date": date,
-            "Host": parsed_url.hostname,
-            "Content-Type": "application/json",
-            "Digest": "SHA-256=%s" % b64encode(digest).decode("ascii"),
-        }
-
-        auth_header = self.get_auth_header(
-            signing_headers,
-            method,
-            path,
-            self.cfg.api_key,
-            self.secret_key,
-        )
-
+    async def get_headers(self) -> dict[str, str]:
+        token = await self.get_token()
         return {
-            "Digest": "SHA-256=%s" % b64encode(digest).decode("ascii"),
-            "Date": date,
-            "Authorization": auth_header,
-            "Host": parsed_url.hostname or "",
             "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
         }
-
-    @classmethod
-    def get_sha256_digest(cls, data) -> bytes:
-        hasher = hashes.Hash(hashes.SHA256(), default_backend())
-        if data is not None:
-            hasher.update(data.encode())
-        return hasher.finalize()
-
-    @classmethod
-    def prepare_string_to_sign(cls, req_tgt, hdrs) -> str:
-        signature_string = "(request-target): " + req_tgt.lower() + "\n"
-        for i, (key, value) in enumerate(hdrs.items()):
-            signature_string += key.lower() + ": " + value
-            if i < len(hdrs.items()) - 1:
-                signature_string += "\n"
-
-        return signature_string
-
-    @classmethod
-    def get_rsasig_b64(cls, key, string_to_sign) -> bytes:
-        return b64encode(key.sign(string_to_sign, padding.PKCS1v15(), hashes.SHA256()))
-
-    @classmethod
-    def get_auth_header(cls, signing_headers, method, path, api_key_id, secret_key):
-        string_to_sign = cls.prepare_string_to_sign(
-            method + " " + path, signing_headers
-        )
-        b64_signed_auth_digest = cls.get_rsasig_b64(secret_key, string_to_sign.encode())
-        auth_str = (
-            'Signature keyId="'
-            + api_key_id
-            + '",'
-            + 'algorithm="rsa-sha256",headers="(request-target)'
-        )
-        for key in signing_headers:
-            auth_str += " " + key.lower()
-        auth_str += '", signature="' + b64_signed_auth_digest.decode("ascii") + '"'
-        return auth_str
 
 
 class UCSMQueryResult:
@@ -401,7 +350,7 @@ class UCSM:
                 res = await self.auth()
                 if isinstance(res, Err):
                     return Err(f"error logging into {self.name}: {res.value}")
-                self.log.info(f"starting techsupport for {self.name}")
+                self.log.info(f"starting UCSM techsupport for {self.name}")
                 res = await self.start_techsupport()
                 if isinstance(res, Err):
                     msg = f"error starting techsupport for {self.name}: {res.value}"
