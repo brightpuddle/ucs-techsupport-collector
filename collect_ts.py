@@ -22,6 +22,11 @@ except ImportError:
 import aiohttp
 from result import Err, Ok, Result
 
+
+class AuthException(Exception):
+    pass
+
+
 LOGGER_NAME = "ucsm_techsupport"
 INTERSIGHT_API = "https://intersight.com/api/v1"
 
@@ -192,10 +197,7 @@ class Intersight:
                 },
             ) as res:
                 if res.status != 200:
-                    raise Exception(
-                        "Failed to fetch token from the OAuth 2.0 server: %s"
-                        % res.status
-                    )
+                    raise AuthException("Cannot authenticate with Intersight")
                 token_json = await res.json()
                 self._token = token_json["access_token"]
                 self._token_refresh = int(time.time())
@@ -288,7 +290,10 @@ class Intersight:
     async def get(self, url: str) -> Result[dict, str]:
         if self.session is None:
             return Err("GET with no session")
-        headers = await self.get_headers()
+        try:
+            headers = await self.get_headers()
+        except AuthException as e:
+            return Err(str(e))
         async with self.session.get(url, headers=headers) as res:
             if res.status >= 300:
                 return Err(f"Status code: {res.status}")
@@ -299,7 +304,10 @@ class Intersight:
         if self.session is None:
             return Err("POST with no session")
         body = json.dumps(data)
-        headers = await self.get_headers()
+        try:
+            headers = await self.get_headers()
+        except AuthException as e:
+            return Err(str(e))
         async with self.session.post(url, data=body, headers=headers) as res:
             if res.status >= 300:
                 return Err(f"Status code: {res.status}")
