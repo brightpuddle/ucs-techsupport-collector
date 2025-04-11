@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import traceback
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
-import time
 
 import aiofiles
 import yaml
@@ -116,7 +116,7 @@ class Config:
         return self
 
 
-class ServerDisconnectErr(Err):
+class ServerDisconnectErr(Err[str]):
     pass
 
 
@@ -160,7 +160,7 @@ class Intersight:
             self.log.info(f"fetching pid and sn for {self.name}")
             res = await self.get_pid_serial()
             if isinstance(res, Err):
-                return Err(f"error fetching pid and sn on {self.name}: {res.value}")
+                return Err(f"error fetching pid and sn on {self.name}: {res.err_value}")
 
             # Start techsupport
             self.log.info(
@@ -168,19 +168,19 @@ class Intersight:
             )
             res = await self.start_techsupport()
             if isinstance(res, Err):
-                msg = f"error starting techsupport for {self.name}: {res.value}"
+                msg = f"error starting techsupport for {self.name}: {res.err_value}"
                 return Err(msg)
             while True:
                 res = await self.query_techsupport()
                 if isinstance(res, Err):
-                    self.log.error(f"host: {self.name} err: {res.value}")
+                    self.log.error(f"host: {self.name} err: {res.err_value}")
                     return res
                 res = res.unwrap()
                 if res.is_complete():
                     break
                 await asyncio.sleep(5)
             await self.download_techsupport()
-        return Ok()
+        return Ok(None)
 
     async def get_token(self) -> str:
         if int(time.time()) - self._token_refresh > 900:
@@ -218,7 +218,7 @@ class Intersight:
         except Exception:
             self.log.debug(json.dumps(data))
             return Err("unable to read pid or SN from Intersight response")
-        return Ok()
+        return Ok(None)
 
     async def start_techsupport(self) -> Result[None, str]:
         url = f"{INTERSIGHT_API}/techsupportmanagement/TechSupportBundles"
@@ -237,7 +237,7 @@ class Intersight:
             self.moid = data["TechSupportStatus"]["Moid"]
         except Exception:
             return Err("cannot read moid from start_techsupport response")
-        return Ok()
+        return Ok(None)
 
     async def query_techsupport(self) -> Result[IntersightQueryResult, str]:
         if self.moid is None:
@@ -285,7 +285,7 @@ class Intersight:
         self.progress.update(
             self.task, description=f"{self.name} complete.", completed=100
         )
-        return Ok()
+        return Ok(None)
 
     async def get(self, url: str) -> Result[dict, str]:
         if self.session is None:
@@ -357,11 +357,11 @@ class UCSM:
             try:
                 res = await self.auth()
                 if isinstance(res, Err):
-                    return Err(f"error logging into {self.name}: {res.value}")
+                    return Err(f"error logging into {self.name}: {res.err_value}")
                 self.log.info(f"starting UCSM techsupport for {self.name}")
                 res = await self.start_techsupport()
                 if isinstance(res, Err):
-                    msg = f"error starting techsupport for {self.name}: {res.value}"
+                    msg = f"error starting techsupport for {self.name}: {res.err_value}"
                     return Err(msg)
                 while True:
                     res = await self.query_techsupport()
@@ -369,7 +369,7 @@ class UCSM:
                         await asyncio.sleep(10)
                         continue
                     if isinstance(res, Err):
-                        self.log.error(f"host: {self.name} err: {res.value}")
+                        self.log.error(f"host: {self.name} err: {res.err_value}")
                         return res
                     res = res.unwrap()
                     if res.is_complete():
@@ -387,7 +387,7 @@ class UCSM:
                     except Exception as e:
                         traceback.print_exc()
                         return Err(str(e))
-        return Ok()
+        return Ok(None)
 
     def get_ts(self) -> int:
         if self.ts is None:
@@ -454,7 +454,7 @@ class UCSM:
         self.progress.update(
             self.task, description=f"{self.name} complete.", completed=100
         )
-        return Ok()
+        return Ok(None)
 
     async def auth(self) -> Result[None, str]:
         usr = self.host.username
@@ -471,7 +471,7 @@ class UCSM:
             if errMsg is None:
                 return Err(f"login: outCookie not found in response data {res}")
             return Err(errMsg)
-        return Ok()
+        return Ok(None)
 
     async def logout(self) -> Result[str, str]:
         xml = f'<aaaLogout inCookie="{self.cookie}" />'
@@ -492,7 +492,7 @@ async def main() -> None:
         results = await asyncio.gather(*hosts)
         for res in results:
             if isinstance(res, Err):
-                log.error(res.value)
+                log.error(str(res.err_value))
 
 
 if __name__ == "__main__":

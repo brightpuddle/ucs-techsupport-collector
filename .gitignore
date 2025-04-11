@@ -1,6 +1,7 @@
 
 secret_key.txt
 
+/config.yaml
 *.log
 *.log.*
 *.tar

@@ -1,6 +1,6 @@
-aiohttp==3.8.1
-PyYAML==6.0
-result==0.8.0
-rich==12.4.4
-aiofiles==22.1.0
-cryptography==37.0.2
+aiohttp
+PyYAML
+result
+rich
+aiofiles
+cryptography
