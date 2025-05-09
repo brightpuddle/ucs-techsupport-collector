@@ -1,8 +1,8 @@
 # Intersight credentials are only required if downloading techsupport from intersight
-# Intersight API key
-api_key: <key>
-# Intersight secret key file
-secret_key_file: secret_key.txt
+# Intersight OAuth client ID
+client_id: <key>
+# Intersight Oauth client secret
+client_secret: <secret>
 
 hosts:
   - source: ucsm
